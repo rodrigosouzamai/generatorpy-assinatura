@@ -3,36 +3,70 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import requests
 import traceback # Para logs de erro detalhados
+import os # Para caminhos de ficheiros
 
 # --- CORREÇÃO: Função para carregar uma fonte de forma segura ---
-def get_font(url, size):
-    """Faz o download de um ficheiro de fonte .ttf e carrega-o."""
+# Tenta carregar a fonte localmente. Se falhar, faz o download.
+def get_font_robust(font_filename, font_url, size):
+    """Tenta carregar a fonte do sistema. Se falhar, faz o download."""
+    local_font_path = f"/tmp/{font_filename}" # Usar um diretório temporário
+    
     try:
-        # Tenta obter a fonte a partir do URL
-        r = requests.get(url, allow_redirects=True)
+        # 1. Tenta usar a fonte se já foi descarregada
+        if os.path.exists(local_font_path):
+            return ImageFont.truetype(local_font_path, size)
+            
+        # 2. Se não existe, tenta descarregar
+        print(f"INFO: A descarregar fonte de {font_url}...")
+        r = requests.get(font_url, allow_redirects=True, timeout=10) # Adiciona timeout
         r.raise_for_status() # Verifica se o download falhou
-        font_file = io.BytesIO(r.content)
-        return ImageFont.truetype(font_file, size)
+        
+        font_data = io.BytesIO(r.content)
+        
+        # 3. Salva a fonte no /tmp para uso futuro
+        with open(local_font_path, "wb") as f:
+            f.write(font_data.getbuffer())
+            
+        # 4. Retorna a fonte a partir dos dados em memória
+        font_data.seek(0) # Rebobina o buffer
+        return ImageFont.truetype(font_data, size)
+        
     except Exception as e:
-        print(f"ERRO CRÍTICO: Não foi possível carregar a fonte de {url}. Usando fonte padrão. Erro: {e}")
-        # Se o download falhar, volta para a fonte padrão como última tentativa
-        return ImageFont.load_default()
+        print(f"!!!!!! ERRO CRÍTICO AO CARREGAR FONTE: {e} !!!!!!")
+        print("!!!!!! A USAR ImageFont.load_default() COMO ÚLTIMA OPÇÃO !!!!!!")
+        # Se TUDO falhar (download, etc.), tenta o load_default()
+        # Se isto falhar, o container vai "morrer" (crash)
+        try:
+            return ImageFont.load_default()
+        except IOError:
+            print("!!!!!! ERRO FATAL: load_default() também falhou. Não há fontes. !!!!!!")
+            # Se até o load_default falhar, não há nada a fazer.
+            # Lança o erro para "derrubar" o FastAPI de forma controlada.
+            raise Exception(f"Falha fatal ao carregar qualquer tipo de fonte: {e}")
 
 def generate_trilha_signature(data):
     try:
-        # --- URLs das Fontes ---
-        # Estamos a usar a "Inter", a mesma fonte do seu site
+        print("INFO: A iniciar generate_trilha_signature...") # Log de início
+        
+        # --- URLs e nomes de ficheiros das Fontes ---
         font_bold_url = "https://github.com/google/fonts/raw/main/ofl/inter/Inter-Bold.ttf"
         font_regular_url = "https://github.com/google/fonts/raw/main/ofl/inter/Inter-Regular.ttf"
+        font_bold_filename = "Inter-Bold.ttf"
+        font_regular_filename = "Inter-Regular.ttf"
 
         # --- Carregar Fontes de forma segura ---
-        font_name = get_font(font_bold_url, 18)
-        font_title = get_font(font_regular_url, 14)
-        font_phone = get_font(font_bold_url, 14)
+        print("INFO: A carregar fontes...")
+        font_name = get_font_robust(font_bold_filename, font_bold_url, 18)
+        font_title = get_font_robust(font_regular_filename, font_regular_url, 14)
+        font_phone = get_font_robust(font_bold_filename, font_bold_url, 14)
+        print("INFO: Fontes carregadas.")
 
         # --- Processamento do GIF (lê apenas o primeiro frame) ---
-        response_logo = requests.get(data.image_url, stream=True)
+        print("INFO: A descarregar logo...")
+        response_logo = requests.get(data.image_url, stream=True, timeout=10)
+        response_logo.raise_for_status()
         logo = Image.open(response_logo.raw).convert("RGBA")
+        print("INFO: Logo descarregado.")
         
         # O layout no HTML (trilha-signature-preview) tem 450x120
         # O fundo é #C3AEF4
@@ -45,8 +79,10 @@ def generate_trilha_signature(data):
         
         # Cola o logo (centralizado na célula de 140px)
         base_img.paste(logo_resized, (5, (120 - logo_height) // 2), logo_resized)
+        print("INFO: Logo processado.")
 
         # --- Processamento do QR Code ---
+        print("INFO: A processar QR Code...")
         qr_data = data.qrCodeData.split(",")[1]
         qr_img_raw = Image.open(io.BytesIO(base64.b64decode(qr_data))).convert("RGBA")
         
@@ -59,8 +95,10 @@ def generate_trilha_signature(data):
 
         # Cola o QR code (com fundo) na imagem base
         base_img.paste(qr_bg, (450 - 110 - 5, (120 - 110) // 2)) # 5px da borda direita
+        print("INFO: QR Code processado.")
 
         # --- Adiciona Texto ---
+        print("INFO: A adicionar texto...")
         draw = ImageDraw.Draw(base_img)
         text_color = "#0E2923" # Cor do texto no HTML
         x_offset = 150 # Posição de início do texto (depois do logo)
@@ -71,11 +109,9 @@ def generate_trilha_signature(data):
         draw.text((x_offset, 55), data.title, fill=text_color, font=font_title)
         # Telefone
         draw.text((x_offset, 75), data.phone, fill=text_color, font=font_phone)
+        print("INFO: Texto adicionado.")
 
         # --- Salva a imagem ---
-        # O frontend está à espera de um GIF, mas o seu código gera um PNG.
-        # Isto não é o ideal, mas o frontend (gerador_assinatura.html) está
-        # programado para aceitar um PNG, por isso vamos manter.
         output = io.BytesIO()
         base_img.save(output, format="PNG")
         print("INFO: Imagem Trilha gerada com sucesso.")
@@ -89,3 +125,4 @@ def generate_trilha_signature(data):
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         # Levanta o erro para o FastAPI o reportar
         raise e
+
