@@ -4,9 +4,9 @@ import io
 import requests
 import traceback # Para logs de erro detalhados
 import os # Para caminhos de ficheiros
+import gc # Garbage Collector (Coletor de Lixo)
 
-# --- CORREÇÃO: Função para carregar uma fonte de forma segura ---
-# Tenta carregar a fonte localmente. Se falhar, faz o download.
+# --- Função de Fonte (sem alterações, continua a guardar em /tmp) ---
 def get_font_robust(font_filename, font_url, size):
     """Tenta carregar a fonte do sistema. Se falhar, faz o download."""
     local_font_path = f"/tmp/{font_filename}" # Usar um diretório temporário
@@ -34,67 +34,75 @@ def get_font_robust(font_filename, font_url, size):
     except Exception as e:
         print(f"!!!!!! ERRO CRÍTICO AO CARREGAR FONTE: {e} !!!!!!")
         print("!!!!!! A USAR ImageFont.load_default() COMO ÚLTIMA OPÇÃO !!!!!!")
-        # Se TUDO falhar (download, etc.), tenta o load_default()
-        # Se isto falhar, o container vai "morrer" (crash)
         try:
             return ImageFont.load_default()
         except IOError:
             print("!!!!!! ERRO FATAL: load_default() também falhou. Não há fontes. !!!!!!")
-            # Se até o load_default falhar, não há nada a fazer.
-            # Lança o erro para "derrubar" o FastAPI de forma controlada.
             raise Exception(f"Falha fatal ao carregar qualquer tipo de fonte: {e}")
 
 def generate_trilha_signature(data):
+    # --- Variáveis para limpeza de memória ---
+    logo_raw = None
+    logo_resized = None
+    qr_img_raw = None
+    qr_img_resized = None
+    base_img = None
+    qr_bg = None
+    draw = None
+    
     try:
-        print("INFO: A iniciar generate_trilha_signature...") # Log de início
+        print("INFO: A iniciar generate_trilha_signature...")
         
-        # --- URLs e nomes de ficheiros das Fontes ---
+        # --- Fontes ---
+        print("INFO: A carregar fontes...")
         font_bold_url = "https://github.com/google/fonts/raw/main/ofl/inter/Inter-Bold.ttf"
         font_regular_url = "https://github.com/google/fonts/raw/main/ofl/inter/Inter-Regular.ttf"
         font_bold_filename = "Inter-Bold.ttf"
         font_regular_filename = "Inter-Regular.ttf"
-
-        # --- Carregar Fontes de forma segura ---
-        print("INFO: A carregar fontes...")
         font_name = get_font_robust(font_bold_filename, font_bold_url, 18)
         font_title = get_font_robust(font_regular_filename, font_regular_url, 14)
         font_phone = get_font_robust(font_bold_filename, font_bold_url, 14)
         print("INFO: Fontes carregadas.")
 
-        # --- Processamento do GIF (lê apenas o primeiro frame) ---
+        # --- Imagem Base ---
+        base_img = Image.new("RGBA", (450, 120), "#C3AEF4")
+        
+        # --- Processamento do Logo (Otimizado) ---
         print("INFO: A descarregar logo...")
         response_logo = requests.get(data.image_url, stream=True, timeout=10)
         response_logo.raise_for_status()
-        logo = Image.open(response_logo.raw).convert("RGBA")
-        print("INFO: Logo descarregado.")
         
-        # O layout no HTML (trilha-signature-preview) tem 450x120
-        # O fundo é #C3AEF4
-        base_img = Image.new("RGBA", (450, 120), "#C3AEF4")
+        # Usa 'with' para garantir que a imagem original (logo_raw) é fechada
+        with Image.open(response_logo.raw) as logo_raw:
+            logo_raw_converted = logo_raw.convert("RGBA")
+            logo_width = 140
+            logo_height = int((logo_width / float(logo_raw_converted.size[0])) * float(logo_raw_converted.size[1]))
+            logo_resized = logo_raw_converted.resize((logo_width, logo_height), Image.Resampling.LANCZOS)
         
-        # O logo no HTML é 140px de largura, vamos redimensionar
-        logo_width = 140
-        logo_height = int((logo_width / float(logo.size[0])) * float(logo.size[1]))
-        logo_resized = logo.resize((logo_width, logo_height), Image.Resampling.LANCZOS)
+        # 'logo_raw' e 'logo_raw_converted' são libertados aqui
         
-        # Cola o logo (centralizado na célula de 140px)
         base_img.paste(logo_resized, (5, (120 - logo_height) // 2), logo_resized)
+        del logo_resized # Liberta a memória do logo redimensionado
         print("INFO: Logo processado.")
 
-        # --- Processamento do QR Code ---
+        # --- Processamento do QR Code (Otimizado) ---
         print("INFO: A processar QR Code...")
         qr_data = data.qrCodeData.split(",")[1]
-        qr_img_raw = Image.open(io.BytesIO(base64.b64decode(qr_data))).convert("RGBA")
+        qr_data_bytes = io.BytesIO(base64.b64decode(qr_data))
         
-        # O QR no HTML tem 110x110 (incluindo padding)
-        qr_img_resized = qr_img_raw.resize((100, 100), Image.Resampling.LANCZOS)
+        # Usa 'with' para garantir que a imagem original (qr_img_raw) é fechada
+        with Image.open(qr_data_bytes) as qr_img_raw:
+            qr_img_raw_converted = qr_img_raw.convert("RGBA")
+            qr_img_resized = qr_img_raw_converted.resize((100, 100), Image.Resampling.LANCZOS)
         
-        # Cria um fundo branco para o QR code
+        # 'qr_img_raw' e 'qr_img_raw_converted' são libertados aqui
+        
         qr_bg = Image.new("RGBA", (110, 110), "white")
-        qr_bg.paste(qr_img_resized, (5, 5)) # Adiciona 5px de padding
+        qr_bg.paste(qr_img_resized, (5, 5)) 
+        del qr_img_resized # Liberta a memória do QR redimensionado
 
-        # Cola o QR code (com fundo) na imagem base
-        base_img.paste(qr_bg, (450 - 110 - 5, (120 - 110) // 2)) # 5px da borda direita
+        base_img.paste(qr_bg, (450 - 110 - 5, (120 - 110) // 2))
+        del qr_bg # Liberta a memória do fundo do QR
         print("INFO: QR Code processado.")
 
         # --- Adiciona Texto ---
@@ -102,13 +110,10 @@ def generate_trilha_signature(data):
         draw = ImageDraw.Draw(base_img)
         text_color = "#0E2923" # Cor do texto no HTML
         x_offset = 150 # Posição de início do texto (depois do logo)
-        
-        # Nome
         draw.text((x_offset, 30), data.name, fill=text_color, font=font_name)
-        # Cargo
         draw.text((x_offset, 55), data.title, fill=text_color, font=font_title)
-        # Telefone
         draw.text((x_offset, 75), data.phone, fill=text_color, font=font_phone)
+        del draw # Liberta o objeto Draw
         print("INFO: Texto adicionado.")
 
         # --- Salva a imagem ---
@@ -118,11 +123,14 @@ def generate_trilha_signature(data):
         return output.getvalue()
 
     except Exception as e:
-        # --- LOG DE ERRO ---
-        # Se algo falhar, isto irá imprimir o erro completo nos logs do Railway
         print("!!!!!! ERRO AO GERAR ASSINATURA TRILHA !!!!!!")
         print(traceback.format_exc())
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        # Levanta o erro para o FastAPI o reportar
         raise e
+    finally:
+        # --- Limpeza Manual de Memória ---
+        # Tenta libertar tudo, caso algum objeto ainda exista
+        del logo_raw, logo_resized, qr_img_raw, qr_img_resized, base_img, qr_bg, draw
+        gc.collect() # Força o "garbage collector"
+        print("INFO: Limpeza de memória completa.")
 
