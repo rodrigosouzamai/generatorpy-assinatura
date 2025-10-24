@@ -5,7 +5,22 @@ import io
 from app.utils.png_generator import generate_signature_png
 from app.utils.trilha_generator import generate_trilha_signature
 
+
 app = FastAPI()
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware  # ← ADICIONE ISSO
+
+app = FastAPI()
+
+# Habilita CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ou ["https://octopushelpdesk.com.br"] para mais segurança
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class SignatureRequest(BaseModel):
     name: str
