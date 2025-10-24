@@ -1,6 +1,5 @@
 fastapi
 uvicorn
 pillow
-moviepy
 requests
 python-multipart

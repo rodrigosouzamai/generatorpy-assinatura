@@ -5,8 +5,7 @@ import io
 def generate_signature_png(data):
     response = requests.get(data.image_url, stream=True)
     bg = Image.new("RGBA", (635, 215), (255, 255, 255, 0))
-    logo = Image.open(response.raw).convert("RGBA")
-    logo = logo.resize((215, 215))
+    logo = Image.open(response.raw).convert("RGBA").resize((215, 215))
     bg.paste(logo, (0, 0), logo)
 
     draw = ImageDraw.Draw(bg)
